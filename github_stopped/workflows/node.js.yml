@@ -1,0 +1,78 @@
+name: Deploy Next.js App
+
+on:
+  push:
+    branches:
+      - main  
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the code
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Step 2: Set up Node.js environment
+      - name: Install Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      # Step 3: Install production dependencies
+      - name: Install dependencies
+        run: npm install 
+        
+      # Step 4: Build the Next.js app with environment variables
+      - name: Build the Next.js app
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
+          NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
+          NEXTAUTH_URL: ${{ secrets.NEXTAUTH_URL }}
+          NODE_ENV: ${{ secrets.NODE_ENV }}
+          JWT_SECRET:  ${{ secrets.JWT_SECRET }}
+        run: npm run build
+
+      # Step 5: Archive the build artifacts
+      - name: Archive build artifacts
+        run: tar -czf build-artifacts.tar.gz .next public
+
+      # Step 6: Add SSH key
+      - name: Add SSH key
+        run: |
+          echo "${{ secrets.EC2_KEY }}" > ec2-key.pem
+          chmod 600 ec2-key.pem
+
+      # Step 7: Create SSH directory and known hosts file
+      - name: Create SSH directory
+        run: |
+          mkdir -p ~/.ssh
+          touch ~/.ssh/known_hosts
+
+      # Step 8: Add EC2 host to known hosts
+      - name: Add EC2 host to known hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.EC2_IP }} >> ~/.ssh/known_hosts
+
+      # Step 9: Copy the build artifacts to EC2
+      - name: Deploy to EC2
+        run: |
+          scp -i ec2-key.pem -r build-artifacts.tar.gz ec2-user@${{ secrets.EC2_IP }}:/home/ec2-user/ai-games-ui/
+
+      # Step 10: SSH to EC2, Clean up old build files, extract new ones, and reload Nginx
+      - name: SSH to EC2 and Deploy
+        run: |
+          ssh -i ec2-key.pem ec2-user@${{ secrets.EC2_IP }} << 'EOF'
+            cd /home/ec2-user/ai-games-ui
+            # Pull latest code using GitHub username and token
+            git pull https://${{ secrets.USERNAME}}:${{ secrets.TOKEN }}@github.com/Growth-Loops-Technology/ai-games-ui.git main
+            # Remove old build files
+            rm -rf .next public
+            # Extract new build artifacts
+            tar -xzf build-artifacts.tar.gz
+            # Restart the app using PM2
+            pm2 restart ai_games
+          EOF
